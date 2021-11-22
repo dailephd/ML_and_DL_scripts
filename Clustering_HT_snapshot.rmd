@@ -1,0 +1,173 @@
+---
+Notebook title: Cluster analysis of Hoechst fluorescent intensity in E.coli
+Output: html_document
+Project: Hoechst dynamics and kinetics
+Date : 20211122
+
+---
+The dataset includes single-cell fluorescent measurements of Hoechst intensity in E.coli strain NCMM3722 (wild type). Data were personally collected and processed. Under the microscope, apparently
+there'a heterogeneity in Hoechst signals. The objective of this notebook is to classify this so-called "Phenotype" based solely on intensity. This cluster analysis will serve as an entry point to
+further investigate the kinetics of Hoechst accumulation and degradation.
+Firstly, a screening of clustering algorithms and number of clusters are performed. Then, clustering is performed with optimal algorithms and optimal number of clusters to classify the phenotypes.
+The results are then saved in a csv file.
+## Load packages
+```{r}
+library(tidyverse)
+library(readxl)
+library(plotly)
+library(openxlsx)
+library(gridExtra)
+library(ggprism)
+library(scales)
+library(emojifont)
+library(Cairo)
+library(ggplot2)
+library(ggnewscale)
+library(stats)
+library(sparklyr)
+library(dplyr)
+library(data.table)
+library(clValid)
+library(mclust)
+library(tidymodels)
+library(patchwork)
+```
+## Download data
+```{r}
+url <- "https://www.dropbox.com/s/ic053m6xixmag5t/HT_degradation_demo.csv?dl=1"
+df_deg<- fread(url)
+df_deg
+```
+
+## Cleaning up the dataframe. Remove unnecessary columns
+```{r}
+df1 <- subset( df_deg ,select = -c( IMAGE,
+                                    INTENSITY,
+                                    INTENSITY.ch2.mean_c,
+                                    LOCATION,
+                                    Final_OD600,
+                                    Strain,
+                                    Protocol,
+                                    Date_and_growth_curve,
+                                    Media,
+                                    Exposure_time
+                                    ))
+# Remove time -1 (background measurements)
+df2 <- df1[df1$Time_m != -1,]
+df2
+```
+## Find optimal clustering algorithms with clValid package
+```{r}
+# normed_intensity_ch2 is fluorescent intensity after normalized with exposure time
+# Choose algorithms need to be tested
+clmethods <- c("hierarchical","kmeans", "diana", "fanny", "pam", "sota", "clara","model")
+## Loop through all the concentrations to perform the tests
+for (i in unique(df2$HT_Conc_uM)){
+  data <- df2$normed_intensity_ch2[df2$HT_Conc_uM == i]
+  pdf <- as.data.frame(as.numeric(data))
+  val <- clValid(pdf, nClust = 2:4,clMethods = clmethods,
+                 validation = "internal")
+
+  print(paste("Currently working on HT concentration ",i,"uM"))
+  print(optimalScores(val))
+  plot(val,main = paste("HT concentration ",i,"uM"))
+}
+```
+From the results, with all HT concentrations, hierarchical and k-means clustering algorithms are the best performers with optimal number of clusters is 2.
+The following is phenotype classification with hclust and kmeans functions provided in stats package
+
+```{r}
+# Create vectors to store the results of clustering
+K_pred <- c()
+H_pred <- c()
+# Loop through all the concentrations
+for (i in unique(df2$HT_Conc_uM)){
+  # filter for data
+  data <- df2$normed_intensity_ch2[df2$HT_Conc_uM == i]
+  # perform k-means clustering on data and set results as kclust
+  kclust <- data %>% kmeans(centers = 2)
+  # append k-means results to K_pred vector
+  K_pred <- append(K_pred, kclust$cluster)
+  # calculate dissimilarity matrix from data then create hclust object on dissimilarity
+  # matrix with method = "average"
+  hclust <- data %>%
+                dist()%>%
+                    hclust(method = "average")
+  # use cutree to cut hclust object into 2 clusters
+  cut_avg <- cutree(hclust, k = 2)
+  # append classification results to H_pred
+  H_pred <- append(H_pred, cut_avg)
+
+}
+```
+## Plot histogram of HT intensity distributions with predicted phenotype classification
+```{r}
+
+# Join classification results to dataframe
+df2$K_labels <- K_pred
+df2$H_labels <- H_pred
+# Create a vector of HT concentrations
+htconc <- c(unique(df2$HT_Conc_uM))
+for (i in seq_along(htconc)){
+  data <- df2[df2$HT_Conc_uM == htconc[i],]
+  p <- ggplot(data) +
+          geom_histogram(aes(x= data$normed_intensity_ch2,
+                        color = as.factor(data$K_labels)),
+                        bins = 40,
+                        show.legend = TRUE)+
+          scale_y_log10(name = "Frequency")+
+          scale_x_log10(name = "HT intensity")+
+          scale_color_discrete(name = "Phenotype")+
+          labs(title = paste("Classification with K-means for HT at ",htconc[i],"uM"))+
+          theme(text=element_text(size=28))
+  suppressWarnings(print(p))
+}
+
+
+for (i in seq_along(htconc)){
+  data <- df2[df2$HT_Conc_uM == htconc[i],]
+  q <- ggplot(data) +
+          geom_histogram(aes(x= data$normed_intensity_ch2,
+                                color = as.factor(data$H_labels)),
+                                bins = 40,
+                                show.legend = TRUE) +
+          scale_y_log10(name = "Frequency")+
+          scale_x_log10(name = "HT intensity")+
+          scale_color_discrete(name = "Phenotype")+
+          labs(title = paste("Classification with hierarchical clustering for HT at ",htconc[i],"uM"))+
+          theme(text=element_text(size=28))
+  suppressWarnings(print(q))
+}
+```
+From the histograms, I can see that hierarchical clustering has better performance since there's only
+1 phenotype for each given bin. In the case of k-means clustering, there's a mix of phenotypes
+in some particular bins. Also from the histograms, I can name cluster 1 as "dark" and cluster 2 as "bright" at concentration 0.5, 1, 20 uM, and cluster 1 as "bright", cluster 2 as "dark" for
+concentrations 3, 10, 15 uM.
+Next, I will replace cluster indices with phenotype names
+```{r}
+# First, remove K_labels columns
+df2 <- subset(df2,select= - K_labels)
+# Replace 1 with "bright" and 2 with "dark" in H_labels columns at concentrations 3,10,15 uM
+df2$H_labels[(df2$H_labels == 1) & (df2$HT_Conc_uM == 3 |
+                                    df2$HT_Conc_uM == 10|
+                                    df2$HT_Conc_uM == 15)] <- "bright"
+df2$H_labels[df2$H_labels == 2 & (  df2$HT_Conc_uM == 3 |
+                                    df2$HT_Conc_uM == 10|
+                                    df2$HT_Conc_uM == 15)] <- "dark"
+# Replace 1 with "dark" and 2 with "bright" in H_labels columns at concentrations 0.5,1,20 uM
+df2$H_labels[(df2$H_labels == 2) & (df2$HT_Conc_uM == 0.5 |
+                                    df2$HT_Conc_uM == 1   |
+                                    df2$HT_Conc_uM == 20)] <- "bright"
+df2$H_labels[df2$H_labels == 1 & (df2$HT_Conc_uM == 0.5 |
+                                  df2$HT_Conc_uM == 1   |
+                                  df2$HT_Conc_uM == 20)]   <- "dark"
+# Change column name from H_labels to Classified_phenotype
+colnames(df2)[7] <- "Classified_phenotype"
+# Check data frame
+df2
+```
+## Save dataframe in csv file
+```{r}
+write.csv(df2,"D:/Dropbox_dailescifi/Dropbox/RProject/ClusterHT.csv", row.names = FALSE)
+```
+
