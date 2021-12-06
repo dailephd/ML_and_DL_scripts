@@ -1,0 +1,563 @@
+# Bimodality analysis of Höechst accumulation and degradation distribution in E.coli
+### 1. Dataset introduction
+The followings are dataset of Höechst (HT) fluorescent intensity for individual E.coli cells. They were collected
+from 2 types of experimental protocols: accumulation and degradation. HT was treated for 2 different
+E.coli strains : wild type (WT) and tolC-/- (DTolC). tolC is required for the assembly of efflux pump in bacterial cell.
+Deleting tolC impairs activity of efflux pump, and therefore efflux.
+##### 1.1. HT accumulation
+In order to measure the kinetics of HT accumulation, exponentially grown E.coli cells were treated with
+different concentrations of HT. Aliquots of treated cells were taken from a shaking culture periodically
+then transferred to 1.5% agarose pad containing corresponding HT concentrations, and observed
+under fluorescent microscope.
+##### 1.2. HT degradation
+Exponentially grown E.coli cells were treated with different concentrations of HT for at least 1h. At
+OD600~0.1, cells were centrifuged and transferred to fresh media with no HT. Aliquots were taken from
+this culture (with shaking) periodically then transferred to 1.5% agarose pad with no HT and observed
+under fluorescent microscope.
+##### 1.3. Image processing
+Fluorescent images were analyzed with MicrobeJ plug-in for Fiji. Output information was collected and
+organized in tabular format as can be seen below.
+### 2. Data processing
+2.1. Load libraries
+```{r}
+library(plyr)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(stats)
+library(sparklyr)
+library(readxl)
+library(plotly)
+library(openxlsx)
+library(gridExtra)
+library(ggprism)
+library(scales)
+library(emojifont)
+library(Cairo)
+library(ggnewscale)
+library(stats)
+library(clValid)
+library(mclust)
+library(tidymodels)
+library(patchwork)
+library(varrank)
+library(infotheo)
+library(discretization)
+library(arc)
+library(entropy)
+library(actuar)
+library(ordinal)
+library(devtools)
+library(ggbiplot)
+library(caret)
+library(corrplot)
+library(betareg)
+library(leaps)
+library(MASS)
+library(moments)
+library(microbiome)
+library(diptest)
+```
+2.2. Download data from cloud storage and parse to dataframes
+```{r}
+#Links to csv files
+
+url1 <- "https://www.dropbox.com/s/ic053m6xixmag5t/HT_degradation_demo.csv?dl=1"
+url2 <- "https://www.dropbox.com/s/di568r38yhduavw/HT_accumulation_demo.csv?dl=1"
+url3 <- "https://www.dropbox.com/s/lbgizq7mn0hqha1/ClusterHT.csv?dl=1"
+url4 <- "https://www.dropbox.com/s/9vi4fj7h97ugzk7/20211127_H342_degradation_snapshot_old.csv?dl=1"
+# Read and parse to dataframe
+df_deg <- fread(url1) # Data for degradation
+df_deg.old <- fread(url4)
+df_acc <- fread(url2) # Data for accumulation
+# Check available columns
+colnames(df_deg)
+colnames(df_acc)
+
+
+
+```
+2.3. Data wrangling
+```{r}
+
+# Subset necessary columns
+df1 <- subset(df_acc ,select = c( Genotype,
+                                   HT_Conc_uM,
+                                   Repeat,
+                                   Time_m,
+                                   normed_intensity_ch2
+                                    ))
+df2 <- subset(df_deg, select = c( Genotype,
+                                   HT_Conc_uM,
+                                   Repeat,
+                                   Time_m,
+                                   normed_intensity_ch2 ))
+df3 <- subset(df_deg.old , select =c( Genotype,
+                                   HT_Conc_uM,
+                                   Repeat,
+                                   Time_m,
+                                   normed_intensity_ch2 ) )
+df_acc <- df_acc[order(df_acc$HT_Conc_uM,df_acc$Time_m),]
+df_deg <- df_deg[order(df_deg$HT_Conc_uM,df_deg$Time_m),]
+df_deg.old <- df_deg.old[order(df_deg.old$HT_Conc_uM,df_deg.old$Time_m),]
+# Parse HT accumulation with WT cells data for timepoints >0  into a separate dataframe
+df_acc.WT <- df1[((df1$Time_m > 0) &
+                   (df1$Genotype == "WT")),]
+# Order HT_Conc_uM and Time_m columns
+df_acc.WT <- df_acc.WT[order(df_acc.WT$HT_Conc_uM,df_acc.WT$Time_m),]
+# Parse HT accumulation with DTolC cells data for timepoints >0  into a separate dataframe
+# Order HT_Conc_uM and Time_m columns
+df_acc.DTolC <- df1[((df1$Time_m > 0) &
+                   (df1$Genotype == "DTolC") ),]
+df_acc.DTolC <- df_acc.DTolC [order(df_acc.DTolC$HT_Conc_uM,df_acc.DTolC$Time_m),]
+# Parse HT degradationwith WT cells data for timepoints >=0  into a separate dataframe
+df_deg.WT <- df2[((df2$Time_m >= 0) &
+                   (df2$Genotype == "WT") ),]
+# Order HT_Conc_uM and Time_m columns
+df_deg.WT <- df_deg.WT[order(df_deg.WT$HT_Conc_uM,df_deg.WT$Time_m),]
+# Parse HT degradationwith DTolC cells data for timepoints >=0  into a separate dataframe
+df_deg.DTolC <- df3[((df3$Time_m >= 0) &
+                   (df3$Genotype == "DTolC") ),]
+# Order HT_Conc_uM and Time_m columns
+df_deg.DTolC <- df_deg.DTolC[order(df_deg.DTolC$HT_Conc_uM,df_deg.DTolC$Time_m),]
+df_deg.WTa <- df3[((df3$Time_m >= 0) &
+                   (df3$Genotype == "WT") ),]
+# df_deg.WTa <- df_deg.WTa[order(df_deg.WTa$HT_Conc_uM,df_deg.WTa$Time_m),]
+# df_deg.WT <-bind_rows(df_deg.WT,df_deg.WTa)
+```
+### 3. Data exploration
+3.1. Probability distribution of HT accumulation kinetics in WT cells
+```{r}
+tval <- sort( as.vector(sapply(seq(1 , 9) , function(x)  x*10^seq(-2 ,3))))
+ttxt <- rep( "" , length(tval))
+ttxt [seq(1,37,9)] <- as.character(tval)[seq(1,37,9)]
+p.acc.dist <- ggplot(df_acc.WT) +
+                            ggnewscale::new_scale_color() +
+                             geom_histogram(aes(x= normed_intensity_ch2,
+                                                                        y = after_stat(density),
+                                                                        fill = as.factor(Time_m)),
+                                                                bins = 40,
+                                                                alpha = 0.9) +
+                            facet_grid(rows = vars(HT_Conc_uM)) +
+                            scale_color_prism(palette = "prism_dark") +
+                            scale_y_continuous(name = "Probability density") +
+                            scale_x_log10(name = "HT intensity",
+                                                        guide = 'prism_minor',
+                                                         minor_breaks = tval,
+                                                        breaks = c(0.1,1,10,100,1000),
+                                                        labels =function(n){format(n, scientific = FALSE)})+
+                            labs (title = "Probability distribution of HT accumulation in WT cells")+
+                            guides(fill= guide_legend(title = "Time (m)"),
+                                            y.sec = guide_none("HT concentration (uM)")) +
+                            theme_prism(palette = "prism_dark",
+                                                        base_size = 16) +
+                            theme(legend.background = element_rect(fill = "white"))
+p.acc.dist
+```
+3.2. Probability distribution of HT degradation kinetics in WT cells
+```{r}
+p.deg.dist <- ggplot(df_deg.WT) +
+                            ggnewscale::new_scale_color() +
+                             geom_histogram(aes(x= normed_intensity_ch2,
+                                                                        y = after_stat(density),
+                                                                        fill = as.factor(Time_m)),
+                                                                bins = 40,
+                                                                alpha = 0.9) +
+                            facet_grid(rows = vars(HT_Conc_uM)) +
+                            scale_color_prism(palette = "prism_dark") +
+                            scale_y_continuous(name = "Probability density") +
+                            scale_x_log10(name = "HT intensity",
+                                                        guide = 'prism_minor',
+                                                         minor_breaks = tval,
+                                                        breaks = c(0.1,1,10,100,1000),
+                                                        labels =function(n){format(n, scientific = FALSE)})+
+                            labs (title = "Probability distribution of HT degradation in WT cells")+
+                            guides(fill= guide_legend(title = "Time (m)"),
+                                            y.sec = guide_none("HT concentration (uM)")) +
+                            theme_prism(palette = "prism_dark",
+                                                        base_size = 16) +
+                            theme(legend.background = element_rect(fill = "white"))
+p.deg.dist
+```
+From the histograms of HT intensity distribution for degradation and accumulation kinetics, it is evident
+that HT degradation creates a more heterogeneous response in WT cells. There might be potentially a
+bimodal distribution in the case of HT degradation kinetics.
+
+3.4. Probability distribution of HT degradation kinetics in tolC-/- cells
+```{r}
+p.deg.tolc <- ggplot(df_deg.DTolC) +
+                            ggnewscale::new_scale_color() +
+                             geom_histogram(aes(x= normed_intensity_ch2,
+                                                                        y = after_stat(density),
+                                                                        fill = as.factor(Time_m)),
+                                                                bins = 40,
+                                                                alpha = 0.9) +
+                            facet_grid(rows = vars(HT_Conc_uM)) +
+                            scale_color_prism(palette = "prism_dark") +
+                            scale_y_continuous(name = "Probability density") +
+                            scale_x_log10(name = "HT intensity",
+                                                        guide = 'prism_minor',
+                                                         minor_breaks = tval,
+                                                        breaks = c(0.1,1,10,100,1000),
+                                                        labels =function(n){format(n, scientific = FALSE)})+
+                            labs (title = "Probability distribution of HT degradation in tolC -/- cells")+
+                            guides(fill= guide_legend(title = "Time (m)"),
+                                            y.sec = guide_none("HT concentration (uM)")) +
+                            theme_prism(palette = "prism_dark",
+                                                        base_size = 16) +
+                            theme(legend.background = element_rect(fill = "white"))
+p.deg.tolc
+```
+It is interesting to see that  in the case of 0.1uM HT accumulation, there are clearly 2 separate populations
+of tolC-/-.
+3.5. Probability distribution of HT accumulation kinetics in tolC-/- cells
+```{r}
+p.acc.tolc <- ggplot(df_acc.DTolC) +
+                            ggnewscale::new_scale_color() +
+                             geom_histogram(aes(x= normed_intensity_ch2,
+                                                                        y = after_stat(density),
+                                                                        fill = as.factor(Time_m)),
+                                                                bins = 40,
+                                                                alpha = 0.9) +
+                            facet_grid(rows = vars(HT_Conc_uM)) +
+                            scale_color_prism(palette = "prism_dark") +
+                            scale_y_continuous(name = "Probability density") +
+                            scale_x_log10(name = "HT intensity",
+                                                        guide = 'prism_minor',
+                                                         minor_breaks = tval,
+                                                        breaks = c(0.1,1,10,100,1000),
+                                                        labels =function(n){format(n, scientific = FALSE)})+
+                            labs (title = "Probability distribution of HT accumulation in tolC -/- cells")+
+                            guides(fill= guide_legend(title = "Time (m)"),
+                                            y.sec = guide_none("HT concentration (uM)")) +
+                            theme_prism(palette = "prism_dark",
+                                                        base_size = 16) +
+                            theme(legend.background = element_rect(fill = "white"))
+p.acc.tolc
+```
+Also, in the case of HT accumulation, tolC-/- cells response more heterogeneously when compared to
+what observed in WT cells.
+Next, hierarchical clustering with complete linkange for 2 clusters should be performed to separate
+distinct repsonses from each other. Looking at the distributions over HT concentrations, there's an apparent
+shift, from a distribution with lower intensity to a distribution with higher intensity. Therefore, to properly
+cluster them, data from all concentrations and timepoints should be pooled together for each strain.
+### 4. Identification of 2 populations by hierarchical clustering
+4.1. Write a clustering function
+```{r}
+
+clust <- function(df){
+predcol <-c()
+htconc <-unique(df$HT_Conc_uM)
+# Loop through all the concentrations
+for (i in seq_along(htconc)){
+  # filter for data
+  data <- df[df$HT_Conc_uM == htconc[i],]
+  # calculate dissimilarity matrix from data then create hclust object on dissimilarity
+  # matrix with method = "complete"
+  hclust <- data$normed_intensity_ch2 %>%
+                dist()%>%
+                    hclust(method = "complete")
+  # use cutree to cut hclust object into 2 clusters
+  cut_avg <- cutree(hclust, k = 2)
+  # append classification results to H_pred
+  predcol <- append(predcol, cut_avg)
+}
+df$H_label <- predcol
+return (df$H_label)
+}
+
+```
+4.2. Hierarchical clustering
+```{r}
+df_deg.WT$H_label <- clust (df_deg.WT)
+df_acc.WT$H_label <- clust (df_acc.WT)
+df_deg.DTolC$H_label <- clust (df_deg.DTolC)
+df_acc.DTolC$H_label<- clust (df_acc.DTolC)
+```
+4.3. Visualizing results
+4.3.1. Write a plot function
+```{r}
+plot.probd <- function(df,tit){
+    p<- ggplot(df) +
+                            ggnewscale::new_scale_color() +
+                             geom_histogram(aes(x= normed_intensity_ch2,
+                                                                        y = after_stat(density),
+                                                                        color = as.factor(H_label)),
+                                                                bins = 40,
+                                                                alpha = 0.9) +
+                            facet_grid(rows = vars(HT_Conc_uM)) +
+                            scale_color_prism(palette = "prism_dark") +
+                            scale_y_continuous(name = "Probability density") +
+                            scale_x_log10(name = "HT intensity",
+                                                        guide = 'prism_minor',
+                                                         minor_breaks = tval,
+                                                        breaks = c(0.1,1,10,100,1000),
+                                                        labels =function(n){format(n, scientific = FALSE)})+
+                            labs (title = tit)+
+                            guides(fill= guide_legend(title = "Time (m)"),
+                                            y.sec = guide_none("HT concentration (uM)")) +
+                            theme_prism(palette = "prism_dark",
+                                                        base_size = 16) +
+                            theme(legend.background = element_rect(fill = "white"))
+    print(p)
+}
+```
+4.3.2. Result of clustering HT accumulation distribution with WT cells
+```{r}
+p.acc.clust.WT <-plot.probd(df_acc.WT,"Probability distribution of HT accumulation with WT cells")
+p.acc.clust.WT
+```
+Label 1 as "dark" and 2 as "bright"
+```{r}
+df_acc.WT$H_label[df_acc.WT$H_label  == 1] <- "dark"
+df_acc.WT$H_label[df_acc.WT$H_label  == 2] <- "bright"
+```
+Check the image again to make sure the labels are correct
+```{r}
+p.clust.acc.WT <- plot.probd(df_acc.WT,"Probability distribution of HT accumulation with WT cell")
+p.clust.acc.WT
+```
+4.3.3. Result of clustering HT degradation distribution with WT cells
+```{r}
+p.clust.deg.WT<- plot.probd(df_deg.WT,"Probability distribution of HT degradation in WT cells" )
+p.clust.deg.WT
+```
+For the concentrations of 10 and 15uM. The order of label is reversed. The following is to relabel them
+as 1 for low intensity and 2 for high intensity
+```{r}
+df_deg.WT$H_label[(df_deg.WT$H_label == 1) &
+                                       (df_deg.WT$HT_Conc_uM == 10|
+                                       df_deg.WT$HT_Conc_uM == 15)] <- "bright"
+df_deg.WT$H_label[df_deg.WT$H_label == 2 &
+                                     (df_deg.WT$HT_Conc_uM == 10|
+                                      df_deg.WT$HT_Conc_uM == 15)] <- "dark"
+# label the rest
+df_deg.WT$H_label[(df_deg.WT$H_label == 1) &
+                                       (df_deg.WT$HT_Conc_uM != 10|
+                                       df_deg.WT$HT_Conc_uM != 15)] <- "dark"
+df_deg.WT$H_label[df_deg.WT$H_label == 2 &
+                                     (df_deg.WT$HT_Conc_uM != 10|
+                                      df_deg.WT$HT_Conc_uM != 15)] <- "bright"
+```
+Visualize the distribution again to check the labels
+```{r}
+p.clust.deg.WT <- plot.probd(df_deg.WT,"Probability distribution of HT degradation in WT cells")
+```
+4.3.4.  Result of clustering HT degradation distribution with tolC -/-cells
+
+```{r}
+p.clust.deg.DTolC <- plot.probd(df_deg.DTolC, "Probability distribution of HT accumulation with DTolC cells")
+p.clust.deg.DTolC
+```
+
+Label 1 as "dark" and 2 as "bright"
+```{r}
+df_deg.DTolC$H_label[df_deg.DTolC$H_label  == 1] <- "dark"
+df_deg.DTolC$H_label[df_deg.DTolC$H_label  == 2] <- "bright"
+```
+Double check the labels
+```{r}
+p.clust.deg.DTolC <- plot.probd(df_deg.DTolC, "Probability distribution of HT accumulation with DTolC cells")
+p.clust.deg.DTolC
+```
+
+4.3.5.  Result of clustering HT degradation distribution with tolC -/-cells
+```{r}
+p.clust.acc.DTolC <- plot.probd(df_acc.DTolC, "Probability distribution of HT accumulation with DTolC cells")
+p.clust.acc.DTolC
+```
+Label 1 as "dark" and 2 as "bright"
+```{r}
+df_acc.DTolC$H_label[df_acc.DTolC$H_label  == 1] <- "dark"
+df_acc.DTolC$H_label[df_acc.DTolC$H_label  == 2] <- "bright"
+```
+Double check the labels
+```{r}
+p.clust.acc.DTolC <- plot.probd(df_acc.DTolC, "Probability distribution of HT accumulation with DTolC cells")
+p.clust.acc.DTolC
+```
+### 5. Quantitative characterization of 2 populations by bimodality index and dip test
+The bimodality coefficient is
+b = [(m3^2 + 1)/(m4 + [(3(n-1)2)/((n-2)(n-3))])]
+where m3 is skewness and m4 is kurtosis. Values of b greater than 0.555 (the value for a uniform population)
+may indicate bimodal or multimodal marginal distributions.
+The maximum of 1.0 (obtainedfor the Bernoulli distribution) is obtained for a population with only
+ two distinct values. Very heavy-tailed distributions have small values of b regardless of the number
+ of modes.
+ Hartigan’s dip statistic calculated by taking the maximum difference between the observed
+ distribution of data and a uniform distribution that is chosen to minimize this maximum difference.
+ The idea is that repeated sampling from the uniform (with the sample size of the original data)
+ produces a sampling distribution over these differences; a bimodal (or n-modal) distribution is one in
+ which the HDS is at or greater than the 95th percentile among all sampled values. In other words, as
+ compared to the uniform distribution a multimodal distribution has statistically significant disparities in
+ its distribution function. Thus, the HDS is given to null-hypothesis logic and is inferential; if p < .05, the
+ distribution is considered to be bimodal or multimodal
+
+5.1. Write a function to calculate and store Bimodality index and Dip statistics
+
+```{r}
+# Create a function to store computed values from bimodality and dip.test functions
+bimode <- function (df){
+BC<- c() # Store BC
+DipStat<- c() # Store Dip statistics value
+pofDip <-c() # Store p value of Dip statistics
+htconc <- unique(df$HT_Conc_uM) # Get list of HT concentrations
+HT_Conc_uM <- c() # Store corresponding HT concentrations
+for (i in seq_along(htconc)){ # Loop over all the HT concentrations
+    data <- df$normed_intensity_ch2[df$HT_Conc_uM == htconc[i]]  # Get data
+    BC[i] <- bimodality(data, bs.iter = 2000)
+    DipStat[i] <- dip.test(data, 2000)[[1]] # Calculate and store Dip stat
+    pofDip[i] <- dip.test(data, 2000)[[2]] # Store p value of Dip stat
+    HT_Conc_uM [i] <-htconc[i] # Store corresponding HT concentration
+}
+    results <-data.frame( HT_Conc_uM, BC, DipStat,pofDip) # Collect results into a dataframe
+  return (results)
+}
+
+```
+5.2. Perform calculations for HT degradation and accumulation with both WT and DTolC strains
+```{r}
+df_acc.WT.bc <- bimode(df_acc.WT)
+df_deg.WT.bc <- bimode(df_deg.WT)
+df_acc.DTolC.bc <- bimode(df_acc.DTolC)
+df_deg.DTolC.bc <- bimode(df_deg.DTolC)
+```
+5.3. Interpret results
+```{r}
+# HT accumulation with WT
+df_acc.WT.bc
+```
+From the table, evidently BC and Dip test do not agree at concentrations 0.1,1,2.5,5,10,20uM. 
+There's not enough evidence to claim the bimodality. At concentrations 0.05,0.25,0.5 uM , BC 
+and Dip test agree that the distribution is unimodal. Overall, for HT accumulation in WT strain,
+the distribution is unimodal at tested concentrations
+```{r}
+# HT degradation with WT
+df_deg.WT.bc
+```
+BC and Dip test also disagree on most of tested HT concentrations. While BC indicates that
+there's a bimodal distribution for concentrations 0.5, 1,3,10,15 uM, p values of Dip tests suggest
+that null hypothesis (distribution is unimodal) cannot be rejected. At concentration of 20uM, 
+both BC and Dip test agree that the distribution is unimodal 
+```{r}
+# HT accumulation with DTolC strain
+df_acc.DTolC.bc
+```
+On the contrary to WT strain, HT accumulation in DTolC strain shows clear evidences of 
+bimodality. At concentrations of 0.05, 0.1, 0.5, 10uM both BC and Dip test show clear 
+indicators of bimodality. At 0.25, 1, 2.5, uM BC indicates that the distribution is bimodal while 
+Dip test disagrees. At 5, 20uM both tests agree that the distribution is unimodal
+
+```{r}
+# HT degradation with DTolC strain
+df_deg.DTolC.bc
+```
+At concentrations 0.1 and 0.3uM, both tests agree that the distribution is bimodal. 
+At concentrations 3, 10uM , both tests agree that the distribution is unimodal
+Only at 1uM, BC supports bimodality while Dip test does not. 
+In the next section, normality tests will be performed to examine whether the underlying distribution
+is normal. 
+### 6. Normality tests
+6.1. Q-Q plot
+```{r}
+# A function for q-q plot
+qq <- function(df,tit){
+    p<- ggplot(df) +
+                            ggnewscale::new_scale_color() +
+                             geom_qq_line(aes(sample = normed_intensity_ch2)) +
+                            stat_qq(aes(sample = normed_intensity_ch2)) +
+                            facet_grid(rows = vars(HT_Conc_uM)) +
+                            scale_color_prism(palette = "prism_dark") +
+                            scale_y_continuous(name = "Sample quantile") +
+                            scale_x_continuous(name = "Theoretical quantile") +
+                            labs (title = tit)+
+                            guides(y.sec = guide_none("HT concentration (uM)")) +
+                            theme_prism(palette = "prism_dark",
+                                                        base_size = 16) +
+                            theme(legend.background = element_rect(fill = "white"))
+    print(p)
+}
+
+```
+```{r}
+# HT accumulation with WT
+p.acc.WT.qq <- qq(df_acc.WT,"Q-Q plot of HT accumulation with WT cells")
+
+```
+From the plot, it's clear that at 0.05,0.1,0.25 uM of HT accumulation, the data fit normal theoretical
+quantiles very well, indicating underlying normal distribution. The rest of the plots, it is observable that
+there's 1 part of the data fit well with theoretical quantiles, while the rest doesn't, displaying a bimodality
+```{r}
+# HT degradation with WT
+p.deg.WT.qq <- qq(df_deg.WT,"Q-Q plot of HT degradation with WT cells")
+
+```
+At concentrations 0.5, 1 and 20 uM , the sample quantiles fit well with theoretical quantiles, indicating
+underlying normal distribution. While the rest of the plots, there are apparent deviations  from theoretical
+quantiles.
+```{r}
+# HT accumulation with DTolC
+p.acc.DTolC.qq <- qq(df_acc.DTolC,"Q-Q plot of HT accumulation  with DTolC cells")
+
+```
+The majority of the plots fit with theoretical quantiles, while there are still some data points that
+fall outside of the line. This requires further tests and also suggests a different underlying distribution
+other than normal.
+```{r}
+# HT degradation with DTolC
+p.deg.DTolC.qq <- qq(df_deg.DTolC,"Q-Q plot of HT degradation with DTolC cells")
+
+```
+For concentrations of 0.1 and 10uM, the data fit well with theoretical quantiles, while at 0.1, 1,3 uM
+there are deviations from the line. With that, Shapiro-Wilk test will be performed to assess the normality
+of HT accumulation and degradation distributions further.
+6.2. Shapiro-Wilk test
+```{r}
+# A function to perform and store results of Shapiro-Wilk test
+shapiro <- function(df){
+  htconc <- unique(df$HT_Conc_uM)
+  shapiro_stat <- c()
+  HT_Conc_uM <- c()
+  pvalue <-c()
+  for (i in seq_along(htconc)){
+    data <- df$normed_intensity_ch2[df$HT_Conc_uM == htconc[i]]
+    shapiro_stat[i] <- shapiro.test(data)[[1]]
+    pvalue[i] <- shapiro.test(data)[[2]]
+    HT_Conc_uM[i] <- htconc[[i]]
+  }
+  results <- data.frame(shapiro_stat, pvalue, HT_Conc_uM)
+  print(results)
+  return (results)
+}
+```
+```{r}
+# HT accumulation with WT
+df_acc.WT.shap <- shapiro(df_acc.WT)
+```
+From the results of the shapiro tests, we can conclude that HT accumulation data with WT strain
+will not fit normal distribution with >99% confidence
+```{r}
+# HT degradation with WT
+df_deg.WT.shap <- shapiro(df_deg.WT)
+```
+Similarly, we can conclude that HT degradation data with WT strain
+will not fit normal distribution with >99% confidence
+```{r}
+# HT accumulation with DTolC
+df_acc.DTolC.shap <- shapiro(df_acc.DTolC)
+```
+```{r}
+# HT degradation with DTolC
+df_deg.DTolC.shap <- shapiro(df_deg.DTolC)
+```
+Similar to shapiro tests conducted on WT data, we can conclude that HT accumulation and degradation
+in DTolC cells do not fit normal distribution with more than 99% confidence.
+
+### 7. Conclusion
+
+In conclusion, by performing a series of bimodality and normality tests, there's enough evidence to
+suggest that HT accumulation and degradation distributions are not normal but rather bimodal.
+There's a mixture of 2 populations with distinct intensities in intermediate concentrations. The distributions
+are rather unimodal (but not normal) at very low and very high HT concentrations. Further analyses
+need to be performed to investigate the underlying distributions. 
