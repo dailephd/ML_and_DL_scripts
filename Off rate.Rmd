@@ -1,0 +1,382 @@
+---
+title: "Off rate of HT dissociation"
+output: html_notebook
+---
+This notebook is used to calculate koff of HT dissociation based on dissociation assays. 
+```{r}
+library(plyr)
+library(tidyverse)
+library(dplyr)
+library(data.table)
+library(ggplot2)
+library(stats)
+library(sparklyr)
+library(readxl)
+library(plotly)
+library(openxlsx)
+library(gridExtra)
+library(ggprism)
+library(scales)
+library(emojifont)
+library(Cairo)
+library(ggnewscale)
+library(stats)
+library(tidymodels)
+library(patchwork)
+library(formula.tools)
+library(data.table)
+```
+
+```{r}
+#Links to csv files
+url1 <- "https://www.dropbox.com/s/ic053m6xixmag5t/HT_degradation_demo.csv?dl=1"
+url2 <- "https://www.dropbox.com/s/di568r38yhduavw/HT_accumulation_demo.csv?dl=1"
+url3 <- "https://www.dropbox.com/s/np77bgeuxh4sgsh/20210617_H342_accumulation_degradation_tabular_timelapse.xlsx?dl=1"
+url4 <- "https://www.dropbox.com/s/132wq65kq1m7sv5/20211127_H342_accumulation_degradation_snapshot_from_old_data_to_tab.csv?dl=1"
+url5 <- "https://www.dropbox.com/s/hn53irhedktloyg/20211208_H33342_degradation_timelapse_transfer_from_old.csv?dl=1"
+# Read and parse to dataframe
+df_deg <- fread(url1) # Data for degradation
+df_acc <- fread(url2)
+df_acct <- fread(url4)
+df_degt <-fread(url5)
+# Data for accumulation
+# Check available columns
+colnames(df_deg)
+colnames(df_acc)
+colnames(df_degt)
+colnames(df_acct)
+
+
+```
+```{r}
+df1 <- subset(df_acc ,select = c( Genotype,
+                                  HT_Conc_uM,
+                                  Repeat,
+                                  Time_m,
+                                  normed_intensity_ch2
+))
+df2 <- subset(df_deg, select = c( Genotype,
+                                  HT_Conc_uM,
+                                  Repeat,
+                                  Time_m,
+                                  normed_intensity_ch2 ))
+df3 <- subset(df_degt , select =c( NAME,
+                                   Genotype,
+                                   HT_Conc_uM,
+                                   Repeat,
+                                   Time_m,
+                                   normed_intensity_ch2,
+                                   Phenotype))
+
+# Remove time -1 (background measurements)
+df_acc <- df_acc[order(df_acc$HT_Conc_uM,df_acc$Time_m),]
+df_deg <- df_deg[order(df_deg$HT_Conc_uM,df_deg$Time_m),]
+df_degt <- df_degt[order(df_degt$HT_Conc_uM,df_degt$Time_m),]
+df_acct <- df_acct[order(df_acct$HT_Conc_uM,df_acct$Time_m),]
+df_acc.WT <- df1[((df1$Time_m >= 0) &
+  (df1$Genotype == "WT")&
+  (df1$Repeat == 1)),]
+df_acc.WT <- df_acc.WT[order(df_acc.WT$HT_Conc_uM,df_acc.WT$Time_m),]
+df_deg.WT <- df2[((df2$Time_m >= 0) &
+  (df2$Genotype == "WT") &
+  (df2$Repeat == 1)),]
+df_deg.WT <- df_deg.WT[order(df_deg.WT$HT_Conc_uM,df_deg.WT$Time_m),]
+df_acct.WT <- df4[((df4$Time_m >= 0) &
+  (df4$Genotype == "WT")&
+  (df4$Repeat == 1)),]
+df_acct.WT <- df_acct.WT[order(df_acct.WT$HT_Conc_uM,df_acct.WT$Time_m),]
+df_degt.WT <- df3[((df3$Time_m >= 0) &
+  (df3$Repeat == 1)),]
+
+```
+Calculate mean and standard deviation for each concentration at each time point
+```{r}
+df_deg.WT$"ln_int" <- log(df_deg.WT$normed_intensity_ch2)
+df_deg.WT$"rev_int" <-1/df_deg.WT$normed_intensity_ch2
+df_deg.WT.agg <- df_deg.WT  %>% group_by( HT_Conc_uM , Time_m ) %>%
+        summarise(avg_int = mean(normed_intensity_ch2) ,
+                  std_int = sd(normed_intensity_ch2),
+                  avg_lnint = mean(ln_int),
+                  std_lnint = sd(ln_int),
+                  avg_1int = mean(rev_int),
+                  std_1int = sd(rev_int))%>%
+        mutate( minht    = avg_int - std_int,
+                maxht    = avg_int + std_int,
+                minlnht = avg_lnint - std_lnint,
+                maxlnht = avg_lnint + std_lnint,
+                min1int = avg_1int - std_1int,
+                max1int = avg_1int + std_1int)
+
+df_degt.WT$"ln_int" <- log(df_degt.WT$normed_intensity_ch2)
+df_degt.WT$"rev_int" <-1/df_degt.WT$normed_intensity_ch2
+df_degt.WT.agg <- df_degt.WT  %>% group_by( Phenotype, HT_Conc_uM , Time_m ) %>%
+        summarise(avg_int = mean(normed_intensity_ch2) ,
+                  std_int = sd(normed_intensity_ch2),
+                  avg_lnint = mean(ln_int),
+                  std_lnint = sd(ln_int),
+                  avg_1int = mean(rev_int),
+                  std_1int = sd(rev_int))%>%
+        mutate( minht    = avg_int - std_int,
+                maxht    = avg_int + std_int,
+                minlnht = avg_lnint - std_lnint,
+                maxlnht = avg_lnint + std_lnint,
+                min1int = avg_1int - std_1int,
+                max1int = avg_1int + std_1int)
+
+```
+Plot average of HT intensity as a function of time
+```{r}
+# Function for point plot 
+pointplot <-function(df,x,y,ymin,ymax,color,shape,title,xtitle,ytitle){
+  p<-ggplot (df, aes(x, y)) +
+        ggnewscale :: new_scale_colour() +
+        geom_point(aes(color = as.factor(color),
+                       shape = shape),
+                   size = 3,
+                   stroke = 1.5) +
+        geom_line(aes(color = as.factor(color),
+                      shape = shape),
+                  size = 1,
+                  stroke = 1) +
+        geom_errorbar(aes(x = x , 
+                        y = y , 
+                        color = as.factor(color) ,
+                        ymin = ymin ,
+                        ymax = ymax ),
+                    width = 3,
+                    size = 1 ) +
+        scale_color_prism(palette = "prism_dark") +
+        labs(title = title ) +
+        scale_x_continuous(name = xtitle,
+                           guide = 'prism_offset_minor' ,
+                           position = "bottom",
+                           limits = c(-2.5,62.5)
+                           ) +
+        scale_y_continuous(name = ytitle,
+                           guide = "prism_offset_minor"
+                           ) +
+        theme_prism(palette = "prism_dark" ,base_size = 14)
+  return(p)
+}
+```
+```{r}
+p1 <- pointplot(df = df_deg.WT.agg,
+                x = df_deg.WT.agg$Time_m,
+                y = df_deg.WT.agg$avg_int,
+                ymin = df_deg.WT.agg$minht,
+                ymax = df_deg.WT.agg$maxht,
+                xtitle = 'Time(m)',
+                ytitle = 'Intensity(A.U.)',
+                title = 'HT degradation with WT',
+                color = df_deg.WT.agg$HT_Conc_uM,
+                shape = NULL)
+p1
+```
+```{r}
+p2 <- pointplot(df = df_deg.WT.agg,
+                x = df_deg.WT.agg$Time_m,
+                y = df_deg.WT.agg$avg_lnint,
+                ymin = df_deg.WT.agg$minlnht,
+                ymax = df_deg.WT.agg$maxlnht,
+                xtitle = 'Time(m)',
+                ytitle = 'LN Intensity(A.U.)',
+                title = 'HT degradation with WT',
+                color = df_deg.WT.agg$HT_Conc_uM,
+                shape = NULL)
+p2
+```
+```{r}
+p3 <- pointplot(df = df_deg.WT.agg,
+                x = df_deg.WT.agg$Time_m,
+                y = df_deg.WT.agg$avg_1int,
+                ymin = df_deg.WT.agg$min1int,
+                ymax = df_deg.WT.agg$max1int,
+                xtitle = 'Time(m)',
+                ytitle = '1/HT Intensity(A.U.)',
+                title = 'HT degradation with WT',
+                color = df_deg.WT.agg$HT_Conc_uM,
+                shape = NULL)
+p3
+```
+k off of HT degradation kinetics at population level
+```{r}
+lreg1 <- function(df){
+  reg<-c()
+  r<-c()
+  fitval<-c()
+  summary<-c()
+  ht<-c(list(unique(df$HT_Conc_uM)))
+  for (i in unique(df$HT_Conc_uM)){
+    data<-df[df$HT_Conc_uM == i,]
+    reg<-append(reg,coef(lm(data$ln_int~data$Time_m))[1][1])
+    sum<-summary(lm(data$ln_int~data$Time_m))
+    r<-append(r,sum$r.squared)
+    print(summary(lm(data$ln_int~data$Time_m)))
+  }
+  reg_df<-data.frame(ht,reg,r)
+  colnames(reg_df)<-c("HT_conc","coefficients","r2")
+  print(reg_df)
+  return (reg_df)
+}
+```
+
+```{r}
+lreg2 <- function(df){
+  reg<-c()
+  r<-c()
+  fitval<-c()
+  summary<-c()
+  ht<-c(list(unique(df$HT_Conc_uM)))
+  for (i in unique(df$HT_Conc_uM)){
+    data<-df[df$HT_Conc_uM == i,]
+    reg<-append(reg,coef(lm(data$rev_int~data$Time_m))[1][1])
+    sum<-summary(lm(data$rev_int~data$Time_m))
+    r<-append(r,sum$r.squared)
+    print(summary(lm(data$rev_int~data$Time_m)))
+  }
+  reg_df<-data.frame(ht,reg,r)
+  colnames(reg_df)<-c("HT_conc","coefficients","r2")
+  print(reg_df)
+  return (reg_df)
+}
+```
+
+
+```{r}
+pop_reg1 <- lreg1(df_deg.WT[df_deg.WT$Time_m <=30,])
+pop_reg2 <- lreg2 (df_deg.WT[df_deg.WT$Time_m <=30,])
+```
+At 1uM HT, 1st order kinetics fits better than 2nd order. Hence koff for 1uM HT
+at population level is 3.36(A.U/min)
+
+Since I already know that there's heterogeneity in HT signal at population level, 
+plus high HT cells exhibit a different kinetics compared to low HT cells. It is 
+indeed necessary to observe kinetics of HT degradation at single cell level with 
+high HT and low HT cells analyzed separately.
+```{r}
+lineplot <-function(df,x,y,color,shape,title,xtitle,ytitle){
+  p<-ggplot (df, aes(x, y)) +
+        ggnewscale :: new_scale_colour() +
+        geom_point(aes(color = as.factor(color),
+                       shape = as.factor(shape)),
+                   size = 3,
+                   stroke = 1.5) +
+        geom_line(aes(color = as.factor(color),
+                      shape = as.factor(shape)),
+                  size = 1,
+                  stroke = 1) +
+        labs(title = title ) +
+        scale_x_continuous(name = xtitle,
+                           guide = 'prism_offset_minor' ,
+                           position = "bottom",
+                           limits = c(-2.5,62.5)
+                           ) +
+        scale_y_continuous(name = ytitle,
+                           guide = "prism_offset_minor"
+                           ) +
+        theme_prism(palette = "prism_dark" ,base_size = 14)
+  return(p)
+}
+```
+
+```{r}
+unique(df_degt.WT$HT_Conc_uM)
+```
+```{r}
+datat1 <- df_degt.WT %>% filter(df_degt.WT$HT_Conc_uM == 1 & df_degt.WT$Phenotype == 'dark')
+p2 <- lineplot(df = datat1,
+               x = datat1$Time_m,
+               y = datat1$normed_intensity_ch2,
+               color = datat1$NAME,
+               shape = datat1$Phenotype,
+               xtitle = "Time(m)",
+               ytitle = "Intensity(A.U.)",
+               title = "1uM HT degradation at single cell level")
+p2
+```
+```{r}
+p3 <- lineplot(df = datat1,
+               x = datat1$Time_m,
+               y = datat1$ln_int,
+               color = datat1$NAME,
+               shape = datat1$Phenotype,
+               xtitle = "Time(m)",
+               ytitle = "LN Intensity(A.U.)",
+               title = "Ln 1uM HT degradation at single cell level")
+p3
+```
+```{r}
+p4 <- lineplot(df = datat1,
+               x = datat1$Time_m,
+               y = datat1$rev_int,
+               color = datat1$NAME,
+               shape = datat1$Phenotype,
+               xtitle = "Time(m)",
+               ytitle = "1/HT",
+               title = "1/HT of 1uM HT degradation at single cell level")
+p4
+```
+Linear regression 
+```{r}
+#Function for linear regression 
+
+reg1 <- lreg1(datat1[datat1$Time_m <=30 ,])
+```
+
+```{r}
+
+reg2 <- lreg2(datat1[datat1$Time_m <=30 ,])
+
+```
+From linear regression results, I can see that 1st order kinetic fits better
+so k off is gradient of line ln(HT intensity) against t
+Therefore k off for 1 uM HT degradation is 3.83(A.U/min)
+This is similar to k off of 1uM HT degradation at population level (3.36)
+
+Repeat the process for 10uM HT
+```{r}
+datat10 <- df_degt.WT %>% filter(df_degt.WT$HT_Conc_uM == 10 & df_degt.WT$Phenotype == 'dark')
+p5 <- lineplot(df = datat10,
+               x = datat10$Time_m,
+               y = datat10$normed_intensity_ch2,
+               color = datat10$NAME,
+               shape = datat10$Phenotype,
+               xtitle = "Time(m)",
+               ytitle = "Intensity(A.U.)",
+               title = "10uM HT degradation at single cell level")
+p5
+```
+```{r}
+p6 <- lineplot(df = datat10,
+               x = datat10$Time_m,
+               y = datat10$ln_int,
+               color = datat10$NAME,
+               shape = datat10$Phenotype,
+               xtitle = "Time(m)",
+               ytitle = "Intensity(A.U.)",
+               title = "LN 10uM HT degradation at single cell level")
+p6
+```
+```{r}
+p7 <- lineplot(df = datat10,
+               x = datat10$Time_m,
+               y = datat10$rev_int,
+               color = datat10$NAME,
+               shape = datat10$Phenotype,
+               xtitle = "Time(m)",
+               ytitle = "Intensity(A.U.)",
+               title = "1/HT of 10uM HT degradation at single cell level")
+p7
+```
+Linear regression 
+```{r}
+reg10 <- lreg1(datat10)
+reg20 <- lreg2(datat10)
+```
+Once again, 1st order kinetics fits better. Hence k off of 10uM HT degradation 
+is 5.299 (A.U./min). This is also similar to k off of 10uM HT at population level
+(5.4(A.U./min)). 
+
+
+
+
